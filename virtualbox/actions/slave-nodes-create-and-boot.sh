@@ -1,4 +1,4 @@
-#!/bin/bash 
+#!/bin/bash
 
 #    Copyright 2013 Mirantis, Inc.
 #
@@ -22,6 +22,10 @@
 # Include the handy functions to operate VMs
 source ./config.sh
 source ./functions/vm.sh
+source ./functions/network.sh
+
+# Get variables "host_nic_name" for the slave nodes
+get_fuel_name_ifaces
 
 # Create and start slave nodes
 for idx in $(eval echo {1..$cluster_size}); do
@@ -44,6 +48,15 @@ for idx in $(eval echo {1..$cluster_size}); do
   echo
   add_disk_to_vm $name 1 $vm_slave_second_disk_mb
   add_disk_to_vm $name 2 $vm_slave_third_disk_mb
+
+  #add NIC1 MAC to description
+  mac=$(execute VBoxManage showvminfo $name --machinereadable |awk -F '=' '{ if ($1 == "macaddress1") print $2}')
+  execute VBoxManage modifyvm $name --description $mac
+
+  #add RDP connection
+  if [ ${headless} -eq 1 ]; then
+    enable_vrde $name $((${RDPport} + idx))
+  fi
 
   enable_network_boot_for_vm $name
 

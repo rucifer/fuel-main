@@ -41,7 +41,7 @@ case "${DISTRO}" in
 
   trusty)
     GEMPKG="ruby ruby-dev"
-    sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys D5A05778
+    sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 1D2B45A2
     echo "deb http://mirror.fuel-infra.org/devops/ubuntu/ ./" | sudo tee /etc/apt/sources.list.d/fuel-devops.list
     sudo apt-get update && sudo apt-get -y install nodejs nodejs-legacy npm
     ;;
@@ -102,7 +102,7 @@ else
   sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 36A1D7869245C8950F966E92D8576A8BA88D21E9
   # Install docker
   sudo apt-get update
-  sudo apt-get -y install lxc-docker-1.3.2
+  sudo apt-get -y install lxc-docker-1.5.0
 fi
 
 # Install software
@@ -110,12 +110,13 @@ sudo apt-get update
 sudo apt-get -y install build-essential make git $GEMPKG debootstrap createrepo \
   python-setuptools yum yum-utils libmysqlclient-dev isomd5sum bc \
   python-nose libvirt-bin python-ipaddr python-paramiko python-yaml \
-  python-pip kpartx extlinux unzip genisoimage \
-  lrzip python-daemon python-dev
+  python-pip kpartx extlinux unzip genisoimage syslinux debmirror \
+  lrzip python-daemon python-dev libparse-debcontrol-perl reprepro devscripts \
+  xorriso
 sudo gem install bundler -v 1.2.1
 sudo gem install builder
 sudo pip install xmlbuilder jinja2 pbr
-sudo npm install -g grunt-cli
+sudo npm install -g gulp
 sudo chown -R `whoami`.`id -gn` `npm config get cache`
 
 # Add account to sudoers

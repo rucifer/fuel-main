@@ -5,6 +5,9 @@
 rm -f /var/lib/rpm/__db.*
 rpm --rebuilddb
 
-puppet apply -v /etc/puppet/modules/nailgun/examples/ostf-only.pp
-service supervisord stop
-/usr/bin/supervisord -n
+
+systemctl daemon-reload
+
+puppet apply --debug --verbose --color false --detailed-exitcodes \
+  --logdest /var/log/puppet/ostf.log \
+  /etc/puppet/modules/nailgun/examples/ostf-only.pp

@@ -10,11 +10,11 @@ clean-deb:
 	done
 	sudo rm -rf $(BUILD_DIR)/packages/deb
 
-$(BUILD_DIR)/packages/deb/buildd.tar.gz: SANDBOX_DEB_PKGS:=wget bzip2 apt-utils build-essential python-setuptools devscripts debhelper fakeroot
+$(BUILD_DIR)/packages/deb/buildd.tar.gz: SANDBOX_DEB_PKGS:=wget bzip2 apt-utils build-essential python-setuptools python-pbr devscripts debhelper fakeroot
 $(BUILD_DIR)/packages/deb/buildd.tar.gz: SANDBOX_UBUNTU:=$(BUILD_DIR)/packages/deb/chroot
 $(BUILD_DIR)/packages/deb/buildd.tar.gz: export SANDBOX_UBUNTU_UP:=$(SANDBOX_UBUNTU_UP)
 $(BUILD_DIR)/packages/deb/buildd.tar.gz: export SANDBOX_UBUNTU_DOWN:=$(SANDBOX_UBUNTU_DOWN)
-$(BUILD_DIR)/packages/deb/buildd.tar.gz: $(BUILD_DIR)/mirror/ubuntu/build.done
+$(BUILD_DIR)/packages/deb/buildd.tar.gz: $(BUILD_DIR)/mirror/ubuntu/reprepro.done
 	sh -c "$${SANDBOX_UBUNTU_UP}"
 	sh -c "$${SANDBOX_UBUNTU_DOWN}"
 	sudo rm -f $(SANDBOX_UBUNTU)/var/cache/apt/archives/*.deb
@@ -24,57 +24,60 @@ $(BUILD_DIR)/packages/deb/buildd.tar.gz: $(BUILD_DIR)/mirror/ubuntu/build.done
 # Usage:
 # (eval (call build_deb,package_name))
 define build_deb
-$(BUILD_DIR)/packages/deb/repo.done: $(BUILD_DIR)/packages/deb/$1.done
-$(BUILD_DIR)/packages/deb/repo.done: $(BUILD_DIR)/packages/deb/$1-repocleanup.done
-$(BUILD_DIR)/packages/deb/$1.done: $(BUILD_DIR)/mirror/ubuntu/build.done
+$1-deb: $(BUILD_DIR)/packages/deb/$1.done
+$(BUILD_DIR)/packages/deb/build.done: $(BUILD_DIR)/packages/deb/$1.done
+
+$(BUILD_DIR)/mirror/ubuntu/repo.done: $(BUILD_DIR)/packages/deb/$1.done
+$(BUILD_DIR)/packages/deb/$1.done: $(BUILD_DIR)/mirror/ubuntu/reprepro.done
 $(BUILD_DIR)/packages/deb/$1.done: $(BUILD_DIR)/packages/source_$1.done
 $(BUILD_DIR)/packages/deb/$1.done: $(BUILD_DIR)/packages/deb/buildd.tar.gz
 $(BUILD_DIR)/packages/deb/$1.done: SANDBOX_UBUNTU:=$(BUILD_DIR)/packages/deb/SANDBOX/$1
-$(BUILD_DIR)/packages/deb/$1.done: SANDBOX_DEB_PKGS:=apt wget bzip2 apt-utils build-essential python-setuptools devscripts debhelper fakeroot
 $(BUILD_DIR)/packages/deb/$1.done: export SANDBOX_UBUNTU_UP:=$$(SANDBOX_UBUNTU_UP)
 $(BUILD_DIR)/packages/deb/$1.done: export SANDBOX_UBUNTU_DOWN:=$$(SANDBOX_UBUNTU_DOWN)
 $(BUILD_DIR)/packages/deb/$1.done: $(BUILD_DIR)/repos/repos.done
 	mkdir -p $(BUILD_DIR)/packages/deb/packages $(BUILD_DIR)/packages/deb/sources
-	mkdir -p "$$(SANDBOX_UBUNTU)" && mkdir -p "$$(SANDBOX_UBUNTU)/tmp/apt"
+	mkdir -p $$(SANDBOX_UBUNTU)/tmp/$1/
 	if [ ! -e "$$(SANDBOX_UBUNTU)/etc/debian_version" ]; then \
 		sudo tar xaf $(BUILD_DIR)/packages/deb/buildd.tar.gz -C $$(SANDBOX_UBUNTU); \
 	fi
-	if ! mountpoint -q $$(SANDBOX_UBUNTU)/tmp/apt; then \
-		sudo mount -o bind $(LOCAL_MIRROR_UBUNTU) $$(SANDBOX_UBUNTU)/tmp/apt; \
-		sudo mount -o remount,ro,bind $$(SANDBOX_UBUNTU)/tmp/apt; \
-	fi
-	mountpoint -q $$(SANDBOX_UBUNTU)/proc || sudo mount -t proc sandbox_ubuntu_proc $$(SANDBOX_UBUNTU)/proc
-	sudo mkdir -p $$(SANDBOX_UBUNTU)/tmp/$1
-ifeq ($1,$(filter $1,nailgun-net-check python-tasklib))
-	tar zxf $(BUILD_DIR)/packages/sources/$1/$(subst python-,,$1)*.tar.gz -C $(BUILD_DIR)/packages/deb/sources
-	sudo cp -r $(BUILD_DIR)/packages/deb/sources/$(subst python-,,$1)*/* $$(SANDBOX_UBUNTU)/tmp/$1/
-endif
-	sudo cp -r $(BUILD_DIR)/packages/sources/$1/* $$(SANDBOX_UBUNTU)/tmp/$1/
-	sudo cp -r $(SOURCE_DIR)/packages/deb/specs/$1/* $$(SANDBOX_UBUNTU)/tmp/$1/
-	dpkg-checkbuilddeps $(SOURCE_DIR)/packages/deb/specs/$1/debian/control 2>&1 | sed 's/^dpkg-checkbuilddeps: Unmet build dependencies: //g' | sed 's/([^()]*)//g;s/|//g' | sudo tee $$(SANDBOX_UBUNTU)/tmp/$1.installdeps
-	sudo chroot $$(SANDBOX_UBUNTU) /bin/sh -c "cat /tmp/$1.installdeps | xargs apt-get -y install"
-	sudo chroot $$(SANDBOX_UBUNTU) /bin/sh -c "cd /tmp/$1 ; DEB_BUILD_OPTIONS=nocheck debuild -us -uc -b -d"
-	cp $$(SANDBOX_UBUNTU)/tmp/*$1*.deb $(BUILD_DIR)/packages/deb/packages
-	sudo sh -c "$$$${SANDBOX_UBUNTU_DOWN}"
-	$$(ACTION.TOUCH)
+	sudo tar zxf $(BUILD_DIR)/packages/sources/$1/$1-$(PACKAGE_VERSION).tar.gz -C $$(SANDBOX_UBUNTU)/tmp/$1/
 
-$(BUILD_DIR)/packages/deb/$1-repocleanup.done: $(BUILD_DIR)/mirror/ubuntu/build.done
-	sudo find $(LOCAL_MIRROR_UBUNTU_OS_BASEURL)/pool/main -regex '.*$1_[^-]+-[^-]+.*' -delete
+	DEBFULLNAME=`awk -F'=' '/DEBFULLNAME/ {print $$$$2}' $(BUILD_DIR)/packages/sources/$1/version` \
+		DEBEMAIL=`awk -F'=' '/DEBEMAIL/ {print $$$$2}' $(BUILD_DIR)/packages/sources/$1/version` \
+		sudo -E dch -c $$(SANDBOX_UBUNTU)/tmp/$1/debian/changelog -D $(UBUNTU_RELEASE) -b --force-distribution \
+		-v $(PACKAGE_VERSION)-`awk -F'=' '/DEBRELEASE/ {print $$$$2}' $(BUILD_DIR)/packages/sources/$1/version` \
+		"`awk -F'=' '/DEBMSG/ {print $$$$2}' $(BUILD_DIR)/packages/sources/$1/version`"
+	dpkg-checkbuilddeps $(BUILD_DIR)/repos/$1/debian/control 2>&1 | sed 's/^dpkg-checkbuilddeps: Unmet build dependencies: //g' | sed 's/([^()]*)//g;s/|//g' | sudo tee $$(SANDBOX_UBUNTU)/tmp/$1.installdeps
+	sudo chroot $$(SANDBOX_UBUNTU) /bin/sh -c "cat /tmp/$1.installdeps | xargs --no-run-if-empty apt-get -y install"
+	sudo chroot $$(SANDBOX_UBUNTU) /bin/sh -c "cd /tmp/$1 ; DEB_BUILD_OPTIONS=nocheck debuild -us -uc -b -d"
+	cp $$(SANDBOX_UBUNTU)/tmp/*.deb $(BUILD_DIR)/packages/deb/packages
+	sudo sh -c "$$$${SANDBOX_UBUNTU_DOWN}"
 	$$(ACTION.TOUCH)
 endef
 
+define remove_deb
+#FIXME(aglarendil): do not touch upstream repo. instead - build new repo
+mkdir -p $(BUILD_DIR)/packages/deb
+perl $(SOURCE_DIR)/packages/deb/genpkgnames.pl $(BUILD_DIR)/repos/$1/debian/control > $(BUILD_DIR)/packages/deb/$1.cleanup.list
+cd $(LOCAL_MIRROR_UBUNTU) && cat $(BUILD_DIR)/packages/deb/$1.cleanup.list | \
+xargs -n1 -I{} reprepro --confdir=$(REPREPRO_CONF_DIR) remove $(PRODUCT_NAME)$(PRODUCT_VERSION) {} $(NEWLINE)
+endef
 
-fuel_debian_packages:=fencing-agent nailgun-mcagents nailgun-net-check nailgun-agent python-tasklib
-$(eval $(foreach pkg,$(fuel_debian_packages),$(call build_deb,$(pkg))$(NEWLINE)))
-
-$(BUILD_DIR)/packages/deb/repo.done:
-	sudo find $(BUILD_DIR)/packages/deb/packages -name '*.deb' -exec cp -u {} $(LOCAL_MIRROR_UBUNTU_OS_BASEURL)/pool/main \;
-	echo "Applying fix for upstream bug in dpkg..."
-	-sudo patch -N /usr/bin/dpkg-scanpackages < $(SOURCE_DIR)/packages/dpkg.patch
-	sudo $(SOURCE_DIR)/regenerate_ubuntu_repo.sh $(LOCAL_MIRROR_UBUNTU_OS_BASEURL) $(UBUNTU_RELEASE)
+$(BUILD_DIR)/mirror/ubuntu/repo.done: $(BUILD_DIR)/packages/deb/repocleanup.done
+$(BUILD_DIR)/packages/deb/repocleanup.done: $(BUILD_DIR)/mirror/ubuntu/reprepro.done
+$(BUILD_DIR)/packages/deb/repocleanup.done: $(packages_list:%=$(BUILD_DIR)/packages/source_%.done)
+	$(foreach pkg,$(fuel_debian_packages),$(call remove_deb,$(pkg)))
 	$(ACTION.TOUCH)
 
-ifneq (0,$(strip $(BUILD_DEB_PACKAGES)))
-$(BUILD_DIR)/packages/deb/build.done: $(BUILD_DIR)/packages/deb/repo.done
-endif
+$(BUILD_DIR)/packages/deb/build.done:
+	$(ACTION.TOUCH)
 
+fuel_debian_packages:=fuel-nailgun \
+astute \
+fuel-agent \
+fuel-library$(PRODUCT_VERSION) \
+fuel-mirror \
+fuel-nailgun-agent \
+network-checker
+
+$(eval $(foreach pkg,$(fuel_debian_packages),$(call build_deb,$(pkg))$(NEWLINE)))

@@ -18,19 +18,54 @@
 # and Fuel became operational, and also enabling outbound network/internet access for this VM through the
 # host system
 
+source ./functions/shell.sh
+
 ssh_options='-oConnectTimeout=5 -oStrictHostKeyChecking=no -oCheckHostIP=no -oUserKnownHostsFile=/dev/null -oRSAAuthentication=no -oPubkeyAuthentication=no'
 
-wait_for_fuel_menu() {
+wait_for_line_in_puppet_bootstrap() {
+    ip=$1
+    username=$2
+    password=$3
+    prompt=$4
+    goodline=$5
+    badline=$6
+
+    # Log in into the VM, see if Puppet has completed its run
+    # Looks a bit ugly, but 'end of expect' has to be in the very beginning of the line
+    result=$(
+        execute expect << ENDOFEXPECT
+        spawn ssh $ssh_options $username@$ip
+        expect "connect to host" exit
+        expect "*?assword:*"
+        send "$password\r"
+        expect "$prompt"
+        send "egrep --color=none -e '$goodline' -e '$badline' /var/log/puppet/bootstrap_admin_node.log\r"
+        expect "$prompt"
+        send "logout\r"
+        expect "$prompt"
+ENDOFEXPECT
+    )
+
+    echo "$result" | egrep "$badline" >&2 && return 1
+    echo "$result" | egrep -q "$goodline" && return 0
+    return 1
+}
+
+is_product_vm_operational() {
+    wait_for_line_in_puppet_bootstrap "$@" "^Fuel.*complete" "^Fuel.*FAILED"
+}
+
+wait_for_product_vm_to_download() {
     ip=$1
     username=$2
     password=$3
     prompt=$4
 
-    echo "Waiting for Fuel Menu so it can be skipped. Please do NOT abort the script..."
+    echo "Waiting for product VM to download files. Please do NOT abort the script..."
 
     # Loop until master node gets successfully installed
     maxdelay=3000
-    while ! skip_fuel_menu $ip $username $password "$prompt"; do
+    while ! wait_for_line_in_puppet_bootstrap $ip $username $password "$prompt" "build docker containers finished.|^Fuel.*complete" "^Fuel.*FAILED"; do
         sleep 5
         ((waited += 5))
         if (( waited >= maxdelay )); then
@@ -38,87 +73,6 @@ wait_for_fuel_menu() {
           exit 1
         fi
     done
-}
-
-skip_fuel_menu() {
-    ip=$1
-    username=$2
-    password=$3
-    prompt=$4
-
-    # Log in into the VM, see if Fuel Setup is running or puppet already started
-    # Looks a bit ugly, but 'end of expect' has to be in the very beginning of the line
-    result=$(
-        expect << ENDOFEXPECT
-        spawn ssh $ssh_options $username@$ip
-        expect "connect to host" exit
-        expect "*?assword:*"
-        send "$password\r"
-        expect "$prompt"
-        send "pgrep 'fuelmenu|puppet';echo \"returns $?\"\r"
-        expect "$prompt"
-ENDOFEXPECT
-    )
-    if [[ "$result" =~ "returns 0" ]]; then
-      echo "Skipping Fuel Setup..."
-      expect << ENDOFEXPECT
-        spawn ssh $ssh_options $username@$ip
-        expect "connect to host" exit
-        expect "*?assword:*"
-        send "$password\r"
-        expect "$prompt"
-        send "killall -w -SIGUSR1 fuelmenu\r"
-        expect "$prompt"
-ENDOFEXPECT
-      return 0
-    else
-      return 1
-    fi
-}
-
-is_product_vm_operational() {
-    ip=$1
-    username=$2
-    password=$3
-    prompt=$4
-
-    # Log in into the VM, see if Puppet has completed its run
-    # Looks a bit ugly, but 'end of expect' has to be in the very beginning of the line
-    result=$(
-        expect << ENDOFEXPECT
-        spawn ssh $ssh_options $username@$ip
-        expect "connect to host" exit
-        expect "*?assword:*"
-        send "$password\r"
-        expect "$prompt"
-        send "grep 'Fuel node deployment' /var/log/puppet/bootstrap_admin_node.log\r"
-        expect "$prompt"
-ENDOFEXPECT
-    )
-
-    # When you are launching command in a sub-shell, there are issues with IFS (internal field separator)
-    # and parsing output as a set of strings. So, we are saving original IFS, replacing it, iterating over lines,
-    # and changing it back to normal
-    #
-    # http://blog.edwards-research.com/2010/01/quick-bash-trick-looping-through-output-lines/
-    OIFS="${IFS}"
-    NIFS=$'\n'
-    IFS="${NIFS}"
-
-    for line in $result; do
-        IFS="${OIFS}"
-        if [[ "$line" == Fuel*complete* ]]; then
-            IFS="${NIFS}"
-            return 0;
-        elif [[ "$line" == Fuel*FAILED* ]]; then
-            IFS="${NIFS}"
-            echo "$line" 1>&2
-            exit 1
-        fi
-        IFS="${NIFS}"
-    done
-
-    return 1
 }
 
 wait_for_product_vm_to_install() {
@@ -166,32 +120,30 @@ enable_outbound_network_for_product_vm() {
     # Check for internet access on the host system
     echo -n "Checking for internet connectivity on the host system... "
     check_hosts=`echo google.com wikipedia.com | tr '  ' '\n'`
-    case $(uname) in
+    case $(execute uname) in
         Linux | Darwin)
             for i in ${check_hosts} ; do
-                ping_host=`ping -c 2 ${i} | grep %`
+                ping_host=`execute ping -c 2 ${i} | grep %`
                 ping_host_result+=$ping_host
             done
         ;;
         CYGWIN*)
-            if [ ! -z "`type ping | grep system32`" ]; then
+            if [ ! -z "`execute type ping | grep system32`" ]; then
                 for i in ${check_hosts} ; do
-                    ping_host=`ping -n 5 ${i} | grep %`
+                    ping_host=`execute ping -n 5 ${i} | grep %`
                     ping_host_result+=$ping_host
                 done
-            elif [ ! -z "`type ping | grep bin`" ]; then
+            elif [ ! -z "`execute type ping | grep bin`" ]; then
                 for i in ${check_hosts} ; do
-                    ping_host=`ping ${i} count 5 | grep %`
+                    ping_host=`execute ping ${i} count 5 | grep %`
                     ping_host_result+=$ping_host
                 done
             else
                 print_no_internet_connectivity_banner
-                return 1
             fi
         ;;
         *)
             print_no_internet_connectivity_banner
-            return 1
         ;;
     esac
 
@@ -200,18 +152,17 @@ enable_outbound_network_for_product_vm() {
         echo "OK"
     else
         print_no_internet_connectivity_banner
-        return 1
     fi
 
     # Check host nameserver configuration
     echo -n "Checking local DNS configuration... "
-    if [ -f /etc/resolv.conf ]; then
-      nameserver="$(grep '^nameserver' /etc/resolv.conf | grep -v 'nameserver\s\s*127.' | head -3)"
+    if execute test -f /etc/resolv.conf ; then
+      nameserver="$(execute grep '^nameserver' /etc/resolv.conf | grep -v 'nameserver\s\s*127.' | head -3)"
     fi
-    if [ -z "$nameserver" -a -x /usr/bin/nmcli ]; then
+    if [ -z "$nameserver" ] && execute test -x /usr/bin/nmcli; then
       # Get DNS from network manager
-      if [ -n "`LANG=C nmcli nm | grep \"running\s\+connected\"`" ]; then
-        nameserver="$(nmcli dev list | grep 'IP[46].DNS' | sed -e 's/IP[46]\.DNS\[[0-9]\+\]:\s\+/nameserver /'| grep -v 'nameserver\s\s*127.' | head -3)"
+      if [ -n "`execute LANG=C nmcli nm | grep \"running\s\+connected\"`" ]; then
+        nameserver="$(execute nmcli dev list | grep 'IP[46].DNS' | sed -e 's/IP[46]\.DNS\[[0-9]\+\]:\s\+/nameserver /'| grep -v 'nameserver\s\s*127.' | head -3)"
       fi
     fi
     if [ -z "$nameserver" ]; then
@@ -224,10 +175,15 @@ enable_outbound_network_for_product_vm() {
     # Enable internet access on inside the VMs
     echo -n "Enabling outbound network/internet access for the product VM... "
 
+    # Get network settings (ip address and ip network) for eth1 interface of the master node
+    local master_ip_pub_net=$(echo $fuel_master_ips | cut -f2 -d ' ')
+    master_ip_pub_net="${master_ip_pub_net%.*}"".1"
+    local master_pub_net="${master_ip_pub_net%.*}"".0"
+
     # Log in into the VM, configure and bring up the NAT interface, set default gateway, check internet connectivity
     # Looks a bit ugly, but 'end of expect' has to be in the very beginning of the line
     result=$(
-        expect << ENDOFEXPECT
+        execute expect << ENDOFEXPECT
         spawn ssh $ssh_options $username@$ip
         expect "connect to host" exit
         expect "*?assword:*"
@@ -247,19 +203,57 @@ enable_outbound_network_for_product_vm() {
         expect "$prompt"
         send "sed \"s/DNS_UPSTREAM:.*/DNS_UPSTREAM: \\\$(grep \'^nameserver\' /etc/dnsmasq.upstream | cut -d \' \' -f2)/g\" -i /etc/fuel/astute.yaml\r"
         expect "$prompt"
+        send "sed -i 's/ONBOOT=no/ONBOOT=yes/g' /etc/sysconfig/network-scripts/ifcfg-eth1\r"
+        expect "$prompt"
+        send "sed -i 's/NM_CONTROLLED=yes/NM_CONTROLLED=no/g' /etc/sysconfig/network-scripts/ifcfg-eth1\r"
+        expect "$prompt"
+        send "sed -i 's/BOOTPROTO=dhcp/BOOTPROTO=static/g' /etc/sysconfig/network-scripts/ifcfg-eth1\r"
+        expect "$prompt"
+        send " echo \"IPADDR=$master_ip_pub_net\" >> /etc/sysconfig/network-scripts/ifcfg-eth1\r"
+        expect "$prompt"
+        send " echo \"NETMASK=$mask\" >> /etc/sysconfig/network-scripts/ifcfg-eth1\r"
+        expect "$prompt"
+        send "/sbin/iptables -t nat -A POSTROUTING -s $master_pub_net/24 \! -d $master_pub_net/24 -j MASQUERADE\r"
+        expect "$prompt"
+        send "/sbin/iptables -I FORWARD 1 --dst $master_pub_net/24 -j ACCEPT\r"
+        expect "$prompt"
+        send "/sbin/iptables -I FORWARD 1 --src $master_pub_net/24 -j ACCEPT\r"
+        expect "$prompt"
+        send "service iptables save >/dev/null 2>&1\r"
+        expect "$prompt"
+        send "dockerctl restart cobbler >/dev/null 2>&1\r"
+        expect "$prompt"
+        send "service network restart >/dev/null 2>&1\r"
+        expect "*OK*"
+        expect "$prompt"
         send "dockerctl restart cobbler >/dev/null 2>&1\r"
         expect "$prompt"
         send "dockerctl check cobbler >/dev/null 2>&1\r"
         expect "*ready*"
         expect "$prompt"
-        send "service network restart >/dev/null 2>&1\r"
-        expect "*OK*"
-        expect "$prompt"
-        send "for i in 1 2 3 4 5; do ping -c 2 google.com || ping -c 2 wikipedia.com || sleep 2; done\r"
-        expect "*icmp*"
+        send "logout\r"
         expect "$prompt"
 ENDOFEXPECT
     )
+
+    # Waiting until the network services are restarted.
+    # 5 seconds is optimal time for different operating systems.
+    echo -e "\nWaiting until the network services are restarted..."
+    sleep 5s
+       result_inet=$(
+            execute expect << ENDOFEXPECT
+            spawn ssh $ssh_options $username@$ip
+            expect "connect to host" exit
+            expect "*?assword:*"
+            send "$password\r"
+            expect "$prompt"
+            send "for i in {1..5}; do ping -c 2 google.com || ping -c 2 wikipedia.com || sleep 2; done\r"
+            expect "*icmp*"
+            expect "$prompt"
+            send "logout\r"
+            expect "$prompt"
+ENDOFEXPECT
+        )
 
     # When you are launching command in a sub-shell, there are issues with IFS (internal field separator)
     # and parsing output as a set of strings. So, we are saving original IFS, replacing it, iterating over lines,
@@ -270,7 +264,7 @@ ENDOFEXPECT
     NIFS=$'\n'
     IFS="${NIFS}"
 
-    for line in $result; do
+    for line in $result_inet; do
         IFS="${OIFS}"
         if [[ $line == *icmp_seq* ]]; then
         IFS="${NIFS}"
@@ -287,8 +281,7 @@ print_no_internet_connectivity_banner() {
     echo "FAIL"
     echo "############################################################"
     echo "# WARNING: some of the Fuel features will not be supported #"
-    echo "#          (e.g. RHOS/RHEL integration) because there is   #"
-    echo "#          no Internet connectivity                        #"
+    echo "#          because there is no Internet connectivity       #"
     echo "############################################################"
 }
 

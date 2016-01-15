@@ -1,12 +1,11 @@
-.PHONY: all iso img version-yaml centos-repo ubuntu-repo
-.DELETE_ON_ERROR: $(ISO_PATH) $(IMG_PATH)
+.PHONY: all iso version-yaml centos-repo ubuntu-repo
+.DELETE_ON_ERROR: $(ISO_PATH)
 
-all: iso img version-yaml
+all: iso version-yaml
 
 ISOROOT:=$(BUILD_DIR)/iso/isoroot
 
 iso: $(ISO_PATH)
-img: $(IMG_PATH)
 
 ########################
 # VERSION-YAML ARTIFACT
@@ -41,7 +40,7 @@ centos-repo: $(ARTS_DIR)/$(CENTOS_REPO_ART_NAME)
 
 $(ARTS_DIR)/$(CENTOS_REPO_ART_NAME): $(BUILD_DIR)/iso/isoroot-centos.done
 	mkdir -p $(@D)
-	tar cf $@ -C $(ISOROOT) --xform s:^:centos-repo/: comps.xml  EFI  images  isolinux  Packages  repodata centos-versions.yaml
+	tar cf $@ -C $(ISOROOT) --xform s:^:centos-repo/: comps.xml  EFI  images  isolinux  Packages  repodata
 
 CENTOS_DEP_FILE:=$(call find-files,$(DEPS_DIR_CURRENT)/$(CENTOS_REPO_ART_NAME))
 
@@ -50,22 +49,19 @@ $(BUILD_DIR)/iso/isoroot-centos.done: \
 		$(BUILD_DIR)/iso/isoroot-dotfiles.done
 	mkdir -p $(ISOROOT)
 	tar xf $(CENTOS_DEP_FILE) -C $(ISOROOT) --xform s:^centos-repo/::
-	createrepo -g $(ISOROOT)/comps.xml \
-		-u media://`head -1 $(ISOROOT)/.discinfo` $(ISOROOT)
 	$(ACTION.TOUCH)
 else
 $(BUILD_DIR)/iso/isoroot-centos.done: \
 		$(BUILD_DIR)/mirror/build.done \
 		$(BUILD_DIR)/mirror/make-changelog.done \
 		$(BUILD_DIR)/packages/build.done \
-		$(BUILD_DIR)/openstack/build.done \
+		$(BUILD_DIR)/packages/build-late.done \
 		$(BUILD_DIR)/iso/isoroot-dotfiles.done
 	mkdir -p $(ISOROOT)
 	rsync -rp $(LOCAL_MIRROR_CENTOS_OS_BASEURL)/ $(ISOROOT)
+	rsync -rp $(LOCAL_MIRROR_MOS_CENTOS) $(ISOROOT)
+	rsync -rp $(LOCAL_MIRROR)/extra-repos $(ISOROOT)
 	rsync -rp $(LOCAL_MIRROR)/centos-packages.changelog $(ISOROOT)
-	createrepo -g $(ISOROOT)/comps.xml \
-		-u media://`head -1 $(ISOROOT)/.discinfo` $(ISOROOT)
-	rpm -qi -p $(ISOROOT)/Packages/*.rpm | $(SOURCE_DIR)/iso/pkg-versions.awk > $(ISOROOT)/centos-versions.yaml
 	$(ACTION.TOUCH)
 endif
 
@@ -95,7 +91,6 @@ $(BUILD_DIR)/iso/isoroot-ubuntu.done: \
 	mkdir -p $(ISOROOT)/ubuntu
 	rsync -rp $(LOCAL_MIRROR_UBUNTU_OS_BASEURL)/ $(ISOROOT)/ubuntu/
 	rsync -rp $(LOCAL_MIRROR)/ubuntu-packages.changelog $(ISOROOT)
-	cat $(ISOROOT)/ubuntu/dists/$(UBUNTU_RELEASE)/main/binary-amd64/Packages | $(SOURCE_DIR)/iso/pkg-versions.awk > $(ISOROOT)/ubuntu/ubuntu-versions.yaml
 	$(ACTION.TOUCH)
 endif
 
@@ -106,21 +101,16 @@ endif
 # we need to repack puppet artifact because artifact
 # has puppet directory packed into it but we need to have an
 # archive of puppet modules packed into it
-$(ISOROOT)/puppet-slave.tgz: $(BUILD_DIR)/puppet/$(PUPPET_ART_NAME)
-	tar zxf $(BUILD_DIR)/puppet/$(PUPPET_ART_NAME) -C $(BUILD_DIR)/iso
-	tar zcf $(ISOROOT)/puppet-slave.tgz -C $(BUILD_DIR)/iso/puppet .
+#$(ISOROOT)/puppet-slave.tgz: $(BUILD_DIR)/puppet/$(PUPPET_ART_NAME)
+#	tar zxf $(BUILD_DIR)/puppet/$(PUPPET_ART_NAME) -C $(BUILD_DIR)/iso
+#	tar zcf $(ISOROOT)/puppet-slave.tgz -C $(BUILD_DIR)/iso/puppet .
 
 ########################
 # DOCKER
 ########################
 # DOCKER_ART_NAME is defined in /docker/module.mk
-$(ISOROOT)/docker.done: $(BUILD_DIR)/docker/build.done
-	mkdir -p $(ISOROOT)/docker/images
-	cp $(BUILD_DIR)/docker/$(DOCKER_ART_NAME) $(ISOROOT)/docker/images/$(DOCKER_ART_NAME)
-	cp $(BUILD_DIR)/docker/fuel-centos.tar.xz $(ISOROOT)/docker/images/fuel-centos.tar.xz
-	cp $(BUILD_DIR)/docker/busybox.tar.xz $(ISOROOT)/docker/images/busybox.tar.xz
-	cp -a $(BUILD_DIR)/docker/sources $(ISOROOT)/docker/sources
-	cp -a $(BUILD_DIR)/docker/utils $(ISOROOT)/docker/utils
+$(ISOROOT)/docker.done: $(BUILD_DIR)/docker/build.done \
+		$(BUILD_DIR)/packages/rpm/fuel-docker-images.done
 	$(ACTION.TOUCH)
 
 ########################
@@ -132,9 +122,6 @@ $(BUILD_DIR)/iso/isoroot-dotfiles.done: \
 		$(ISOROOT)/.treeinfo
 	$(ACTION.TOUCH)
 
-$(ISOROOT)/openstack_version: $(BUILD_DIR)/upgrade/$(OPENSTACK_YAML_ART_NAME)
-	python -c "import yaml; print filter(lambda r: r['fields'].get('name'), yaml.load(open('$(BUILD_DIR)/upgrade/$(OPENSTACK_YAML_ART_NAME)')))[0]['fields']['version']" > $@
-
 $(BUILD_DIR)/iso/isoroot-files.done: \
 		$(BUILD_DIR)/iso/isoroot-dotfiles.done \
 		$(ISOROOT)/isolinux/isolinux.cfg \
@@ -143,15 +130,31 @@ $(BUILD_DIR)/iso/isoroot-files.done: \
 		$(ISOROOT)/bootstrap_admin_node.sh \
 		$(ISOROOT)/bootstrap_admin_node.conf \
 		$(ISOROOT)/send2syslog.py \
-		$(ISOROOT)/version.yaml \
-		$(ISOROOT)/openstack_version \
-		$(ISOROOT)/centos-versions.yaml \
-		$(ISOROOT)/ubuntu-versions.yaml \
-		$(ISOROOT)/puppet-slave.tgz
+		$(ISOROOT)/version.yaml
 	$(ACTION.TOUCH)
 
 $(ISOROOT)/.discinfo: $(SOURCE_DIR)/iso/.discinfo ; $(ACTION.COPY)
 $(ISOROOT)/.treeinfo: $(SOURCE_DIR)/iso/.treeinfo ; $(ACTION.COPY)
+
+# It's a callable object.
+# Usage: $(call create_ks_repo_entry,repo)
+# where:
+# repo=repo_name,http://path_to_the_repo,repo_priority
+# repo_priority is a number from 1 to 99
+define create_ks_repo_entry
+repo --name="$(call get_repo_name,$1)" --baseurl=file:///run/install/repo/extra-repos/$(call get_repo_name,$1) --cost=$(call get_repo_priority,$1)
+endef
+
+$(ISOROOT)/ks.yaml: \
+	export ks_contents:=$(foreach repo,$(EXTRA_RPM_REPOS),\n$(space)$(call create_ks_repo_entry,$(repo))\n)
+$(ISOROOT)/ks.yaml:
+	@mkdir -p $(@D)
+	cp $(KSYAML) $@
+ifneq ($(strip $(EXTRA_RPM_REPOS)),)
+	/bin/echo "extra_repos:" >> $@
+	/bin/echo -e "$${ks_contents}" >> $@
+endif
+
 $(ISOROOT)/isolinux/isolinux.cfg: $(SOURCE_DIR)/iso/isolinux/isolinux.cfg ; $(ACTION.COPY)
 $(ISOROOT)/isolinux/splash.jpg: $(call depv,FEATURE_GROUPS)
 ifeq ($(filter mirantis,$(FEATURE_GROUPS)),mirantis)
@@ -159,56 +162,22 @@ $(ISOROOT)/isolinux/splash.jpg: $(SOURCE_DIR)/iso/isolinux/splash.jpg ; $(ACTION
 else
 $(ISOROOT)/isolinux/splash.jpg: $(SOURCE_DIR)/iso/isolinux/splash_community.jpg ; $(ACTION.COPY)
 endif
-$(ISOROOT)/ks.cfg: $(call depv,KSYAML)
-$(ISOROOT)/ks.cfg: $(SOURCE_DIR)/iso/ks.template $(SOURCE_DIR)/iso/ks.py $(KSYAML)
-	python $(SOURCE_DIR)/iso/ks.py -t $(SOURCE_DIR)/iso/ks.template -c $(KSYAML) -o $@
-ifeq ($(PRODUCTION),docker)
-$(ISOROOT)/bootstrap_admin_node.sh: $(SOURCE_DIR)/iso/bootstrap_admin_node.docker.sh ; $(ACTION.COPY)
-else
+$(ISOROOT)/ks.cfg: $(SOURCE_DIR)/iso/ks.template $(SOURCE_DIR)/iso/ks.py $(ISOROOT)/ks.yaml
+	python $(SOURCE_DIR)/iso/ks.py \
+		-t $(SOURCE_DIR)/iso/ks.template \
+		-c $(ISOROOT)/ks.yaml \
+		-u '{"CENTOS_RELEASE": "$(CENTOS_RELEASE)", "PRODUCT_VERSION": "$(PRODUCT_VERSION)"}' \
+		-o $@.tmp
+	mv $@.tmp $@
+
 $(ISOROOT)/bootstrap_admin_node.sh: $(SOURCE_DIR)/iso/bootstrap_admin_node.sh ; $(ACTION.COPY)
-endif
 $(ISOROOT)/bootstrap_admin_node.conf: $(SOURCE_DIR)/iso/bootstrap_admin_node.conf ; $(ACTION.COPY)
-$(ISOROOT)/send2syslog.py: $(BUILD_DIR)/repos/nailgun/bin/send2syslog.py ; $(ACTION.COPY)
-$(BUILD_DIR)/repos/nailgun/bin/send2syslog.py: $(BUILD_DIR)/repos/nailgun.done
-
-$(ISOROOT)/centos-versions.yaml: $(BUILD_DIR)/iso/isoroot-centos.done
-#	here we don't need to do anything because we unpack centos repo in $(ISOROOT) and it already contains centos-versions.yaml
-	$(ACTION.TOUCH)
-
-$(ISOROOT)/ubuntu-versions.yaml: $(BUILD_DIR)/iso/isoroot-ubuntu.done
-	cp $(ISOROOT)/ubuntu/ubuntu-versions.yaml $@
-	$(ACTION.TOUCH)
+$(ISOROOT)/send2syslog.py: $(BUILD_DIR)/repos/fuel-nailgun/bin/send2syslog.py ; $(ACTION.COPY)
+$(BUILD_DIR)/repos/fuel-nailgun/bin/send2syslog.py: $(BUILD_DIR)/repos/fuel-nailgun.done
 
 ifeq ($(PRODUCTION),docker)
 $(BUILD_DIR)/iso/isoroot.done: $(ISOROOT)/docker.done
 endif
-
-########################
-# BOOTSTRAP
-########################
-# BOOTSTRAP_ART_NAME is defined in /bootstrap/module.mk
-BOOTSTRAP_FILES:=initramfs.img linux
-$(addprefix $(ISOROOT)/bootstrap/, $(BOOTSTRAP_FILES)): \
-		$(BUILD_DIR)/bootstrap/build.done
-	@mkdir -p $(@D)
-	cp $(BUILD_DIR)/bootstrap/$(@F) $@
-
-$(BUILD_DIR)/iso/isoroot-bootstrap.done: \
-		$(ISOROOT)/bootstrap/bootstrap.rsa \
-		$(addprefix $(ISOROOT)/bootstrap/, $(BOOTSTRAP_FILES))
-	$(ACTION.TOUCH)
-
-$(ISOROOT)/bootstrap/bootstrap.rsa: $(SOURCE_DIR)/bootstrap/ssh/id_rsa ;
-	$(ACTION.COPY)
-
-########################
-# Target images
-########################
-$(BUILD_DIR)/iso/isoroot-image.done: $(BUILD_DIR)/image/build.done
-	mkdir -p $(ISOROOT)/targetimages
-	tar xf $(ARTS_DIR)/$(TARGET_CENTOS_IMG_ART_NAME) -C $(ISOROOT)/targetimages
-	tar xf $(ARTS_DIR)/$(TARGET_UBUNTU_IMG_ART_NAME) -C $(ISOROOT)/targetimages
-	$(ACTION.TOUCH)
 
 ########################
 # Iso image root file system.
@@ -217,9 +186,7 @@ $(BUILD_DIR)/iso/isoroot-image.done: $(BUILD_DIR)/image/build.done
 $(BUILD_DIR)/iso/isoroot.done: \
 		$(BUILD_DIR)/iso/isoroot-centos.done \
 		$(BUILD_DIR)/iso/isoroot-ubuntu.done \
-		$(BUILD_DIR)/iso/isoroot-files.done \
-		$(BUILD_DIR)/iso/isoroot-bootstrap.done \
-		$(BUILD_DIR)/iso/isoroot-image.done
+		$(BUILD_DIR)/iso/isoroot-files.done
 	$(ACTION.TOUCH)
 
 
@@ -227,11 +194,16 @@ $(BUILD_DIR)/iso/isoroot.done: \
 # Building CD and USB stick images
 ########################
 
+# ISO_VOLUME_ID can't have whitespaces or other non-alphanumeric characters 'as is'.
+# They must be represented as \xNN, where NN is the hexadecimal representation of the character.
+# For example, \x20 is a white space (" ").
+# This is the limitation of kickstart boot options.
+
 ifeq ($(filter mirantis,$(FEATURE_GROUPS)),mirantis)
-ISO_VOLUME_ID:="Mirantis Fuel"
+ISO_VOLUME_ID:=Mirantis_Fuel
 ISO_VOLUME_PREP:="Mirantis Inc."
 else
-ISO_VOLUME_ID:="OpenStack Fuel"
+ISO_VOLUME_ID:=OpenStack_Fuel
 ISO_VOLUME_PREP:="Fuel team"
 endif
 
@@ -248,60 +220,55 @@ $(ISO_PATH): $(BUILD_DIR)/iso/isoroot.done
 	sudo sed -r -i -e "s/netmask=[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}/netmask=$(MASTER_NETMASK)/" $(BUILD_DIR)/iso/isoroot-mkisofs/isolinux/isolinux.cfg
 	sudo sed -r -i -e "s/gw=[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}/gw=$(MASTER_GW)/" $(BUILD_DIR)/iso/isoroot-mkisofs/isolinux/isolinux.cfg
 	sudo sed -r -i -e "s/will_be_substituted_with_PRODUCT_VERSION/$(PRODUCT_VERSION)/" $(BUILD_DIR)/iso/isoroot-mkisofs/isolinux/isolinux.cfg
-	mkisofs -r -V $(ISO_VOLUME_ID) -p $(ISO_VOLUME_PREP) \
-		-J -T -R -b isolinux/isolinux.bin \
-		-no-emul-boot \
-		-boot-load-size 4 -boot-info-table \
-		-x "lost+found" -o $@ $(BUILD_DIR)/iso/isoroot-mkisofs
+	sudo sed -r -i -e 's/will_be_substituted_with_ISO_VOLUME_ID/$(ISO_VOLUME_ID)/g' $(BUILD_DIR)/iso/isoroot-mkisofs/isolinux/isolinux.cfg
+	sudo sed -r -i -e 's/will_be_substituted_with_ISO_VOLUME_ID/$(ISO_VOLUME_ID)/g' $(BUILD_DIR)/iso/isoroot-mkisofs/ks.cfg
+
+
+	mkdir -p $(BUILD_DIR)/iso/efi_tmp/efi_image
+	# We need to have a partition which will be pointed from ISO as efi partition
+	# vmlinuz + initrd + bootloader + conffile = about 38MB. 100M should be enough ^_^
+	dd bs=1M count=100 if=/dev/zero of=$(BUILD_DIR)/iso/efi_tmp/efiboot.img
+	# UEFI standard say to us that EFI partition should be some FAT-related filesystem
+	mkfs.vfat $(BUILD_DIR)/iso/efi_tmp/efiboot.img
+	sudo umount -l $(BUILD_DIR)/iso/efi_tmp/efi_image || true
+	sudo mount $(BUILD_DIR)/iso/efi_tmp/efiboot.img $(BUILD_DIR)/iso/efi_tmp/efi_image
+
+	# This needs to be edited in place due to some strange implemntations of UEFI
+	# For example, Tianocore OVMF will not use efiboot.img. Instead, it looks for
+	# bootloader and it conffiles in /EFI/BOOT/* on main ISO partition (with ISO9660 fs)
+	echo > $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+	echo "default=0" >> $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+	#echo "splashimage=/EFI/BOOT/splash.xpm.gz" >> $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+	echo "timeout 300" >> $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+	echo "hiddenmenu" >> $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+	echo "title DVD Fuel Install (Static IP)" >> $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+	# efiboot.img is a partition with filesystem now and /vmlinuz there will be pointed
+	# to root of it
+	echo "  kernel /vmlinuz biosdevname=0 ks=cdrom:/ks.cfg ip=$(MASTER_IP) gw=$(MASTER_GW) dns1=$(MASTER_DNS) netmask=$(MASTER_NETMASK) hostname=fuel.domain.tld showmenu=yes" >> $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+	echo "  initrd /initrd.img" >> $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+	echo "title USB Fuel Install (Static IP)" >> $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+	echo "  kernel /vmlinuz biosdevname=0 repo=hd:LABEL=\"$(ISO_VOLUME_ID)\":/ ks=hd:LABEL=\"$(ISO_VOLUME_ID)\":/ks.cfg ip=$(MASTER_IP) gw=$(MASTER_GW) dns1=$(MASTER_DNS) netmask=$(MASTER_NETMASK) hostname=fuel.domain.tld showmenu=yes" >> $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+	echo "  initrd /initrd.img" >> $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf
+
+	# But many UEFI implementations will use our efiboot.img and if we want to boot from it,
+	# we also need to place kernel and initrd there (and bootloader and conffile to it too)
+	sudo cp -f $(BUILD_DIR)/iso/isoroot-mkisofs/isolinux/vmlinuz $(BUILD_DIR)/iso/efi_tmp/efi_image/
+	sudo cp -f $(BUILD_DIR)/iso/isoroot-mkisofs/isolinux/initrd.img $(BUILD_DIR)/iso/efi_tmp/efi_image/
+	sudo mkdir -p $(BUILD_DIR)/iso/efi_tmp/efi_image/EFI/BOOT/
+	sudo cp -f $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.conf $(BUILD_DIR)/iso/efi_tmp/efi_image/EFI/BOOT/
+	sudo cp -f $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/BOOTX64.EFI $(BUILD_DIR)/iso/efi_tmp/efi_image/EFI/BOOT/
+	#sudo cp -f $(BUILD_DIR)/iso/isoroot-mkisofs/EFI/BOOT/splash.xpm.gz $(BUILD_DIR)/iso/efi_tmp/efi_image/EFI/BOOT/
+	sudo umount $(BUILD_DIR)/iso/efi_tmp/efi_image
+	cp -f $(BUILD_DIR)/iso/efi_tmp/efiboot.img $(BUILD_DIR)/iso/isoroot-mkisofs/images/
+	sudo rm -rf $(BUILD_DIR)/iso/efi_tmp/
+
+	xorriso -as mkisofs \
+		-V $(ISO_VOLUME_ID) -p $(ISO_VOLUME_PREP) \
+		-J -R \
+		-graft-points \
+		-b isolinux/isolinux.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
+		-isohybrid-mbr /usr/lib/syslinux/isohdpfx.bin \
+		-eltorito-alt-boot -e images/efiboot.img -no-emul-boot \
+		-isohybrid-gpt-basdat \
+		-o $@ $(BUILD_DIR)/iso/isoroot-mkisofs
 	implantisomd5 $@
-
-# IMGSIZE is calculated as a sum of iso size plus
-# installation images directory size (~165M) and syslinux directory size (~35M)
-# plus a bit of free space for ext2 filesystem data
-# +300M seems reasonable
-IMGSIZE = $(shell echo "$(shell ls -s $(ISO_PATH) | awk '{print $$1}') * 1.3 / 1024" | bc)
-
-$(IMG_PATH): $(ISO_PATH)
-	rm -f $(BUILD_DIR)/iso/img_loop_device
-	rm -f $(BUILD_DIR)/iso/img_loop_partition
-	rm -f $(BUILD_DIR)/iso/img_loop_uuid
-	mkdir -p $(@D)
-	sudo losetup -j $(IMG_PATH) | awk -F: '{print $$1}' | while read loopdevice; do \
-          sudo kpartx -v $$loopdevice | awk '{print "/dev/mapper/" $$1}' | while read looppartition; do \
-            sudo umount -f $$looppartition; \
-          done; \
-          sudo kpartx -d $$loopdevice; \
-          sudo losetup -d $$loopdevice; \
-	done
-	rm -f $(IMG_PATH)
-	dd if=/dev/zero of=$(IMG_PATH) bs=1M count=$(IMGSIZE)
-	sudo losetup -f > $(BUILD_DIR)/iso/img_loop_device
-	sudo losetup `cat $(BUILD_DIR)/iso/img_loop_device` $(IMG_PATH)
-	sudo parted -s `cat $(BUILD_DIR)/iso/img_loop_device` mklabel msdos
-	sudo parted -s `cat $(BUILD_DIR)/iso/img_loop_device` unit MB mkpart primary ext2 1 $(IMGSIZE) set 1 boot on
-	sudo kpartx -a -v `cat $(BUILD_DIR)/iso/img_loop_device` | awk '{print "/dev/mapper/" $$3}' > $(BUILD_DIR)/iso/img_loop_partition
-	sleep 1
-	sudo mkfs.ext2 `cat $(BUILD_DIR)/iso/img_loop_partition`
-	mkdir -p $(BUILD_DIR)/iso/imgroot
-	sudo mount `cat $(BUILD_DIR)/iso/img_loop_partition` $(BUILD_DIR)/iso/imgroot
-	sudo extlinux -i $(BUILD_DIR)/iso/imgroot
-	sudo /sbin/blkid -s UUID -o value `cat $(BUILD_DIR)/iso/img_loop_partition` > $(BUILD_DIR)/iso/img_loop_uuid
-	sudo dd conv=notrunc bs=440 count=1 if=/usr/lib/extlinux/mbr.bin of=`cat $(BUILD_DIR)/iso/img_loop_device`
-	sudo cp -r $(BUILD_DIR)/iso/isoroot/images $(BUILD_DIR)/iso/imgroot
-	sudo cp -r $(BUILD_DIR)/iso/isoroot/isolinux $(BUILD_DIR)/iso/imgroot
-	sudo mv $(BUILD_DIR)/iso/imgroot/isolinux $(BUILD_DIR)/iso/imgroot/syslinux
-	sudo rm $(BUILD_DIR)/iso/imgroot/syslinux/isolinux.cfg
-	sudo cp $(SOURCE_DIR)/iso/syslinux/syslinux.cfg $(BUILD_DIR)/iso/imgroot/syslinux  # NOTE(mihgen): Is it used for IMG file? Comments needed!
-	sudo sed -i -e "s/will_be_substituted_with_actual_uuid/`cat $(BUILD_DIR)/iso/img_loop_uuid`/g" $(BUILD_DIR)/iso/imgroot/syslinux/syslinux.cfg
-	sudo sed -r -i -e "s/ip=[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}/ip=$(MASTER_IP)/" $(BUILD_DIR)/iso/imgroot/syslinux/syslinux.cfg
-	sudo sed -r -i -e "s/dns1=[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}/dns1=$(MASTER_DNS)/" $(BUILD_DIR)/iso/imgroot/syslinux/syslinux.cfg
-	sudo sed -r -i -e "s/netmask=[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}/netmask=$(MASTER_NETMASK)/" $(BUILD_DIR)/iso/imgroot/syslinux/syslinux.cfg
-	sudo sed -r -i -e "s/gw=[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}/gw=$(MASTER_GW)/" $(BUILD_DIR)/iso/imgroot/syslinux/syslinux.cfg
-	sudo sed -r -i -e "s/will_be_substituted_with_PRODUCT_VERSION/$(PRODUCT_VERSION)/" $(BUILD_DIR)/iso/imgroot/syslinux/syslinux.cfg
-	sudo cp $(BUILD_DIR)/iso/isoroot/ks.cfg $(BUILD_DIR)/iso/imgroot/ks.cfg
-	sudo sed -i -e "s/will_be_substituted_with_actual_uuid/`cat $(BUILD_DIR)/iso/img_loop_uuid`/g" $(BUILD_DIR)/iso/imgroot/ks.cfg
-	sudo cp $(ISO_PATH) $(BUILD_DIR)/iso/imgroot/nailgun.iso
-	sudo sync
-	sudo umount `cat $(BUILD_DIR)/iso/img_loop_partition`
-	sudo kpartx -d `cat $(BUILD_DIR)/iso/img_loop_device`
-	sudo losetup -d `cat $(BUILD_DIR)/iso/img_loop_device`

@@ -29,7 +29,6 @@ BOOTSTRAP_RPMS:=\
 	ql2100-firmware \
 	ql2200-firmware \
 	ql23xx-firmware \
-	cronie-noanacron \
 	crontabs \
 	dhclient \
 	dmidecode \
@@ -37,12 +36,14 @@ BOOTSTRAP_RPMS:=\
 	logrotate \
 	mcollective \
 	mingetty \
+	nc \
 	net-tools \
 	ntp \
 	ntpdate \
 	openssh-clients \
 	openssh-server \
 	pciutils \
+	plymouth \
 	rsyslog \
 	scapy \
 	tcpdump \
@@ -54,16 +55,36 @@ BOOTSTRAP_RPMS:=\
 BOOTSTRAP_RPMS_CUSTOM:=\
 	nailgun-agent \
 	nailgun-mcagents \
-	nailgun-net-check \
+	network-checker \
 	fuel-agent \
-	python-tasklib
+	rubygem-mime-types \
+	rubygem-ffi \
+	rubygem-ffi-yajl \
+	rubygem-mixlib-shellout \
+	rubygem-wmi-lite
 
 define yum_local_repo
 [mirror]
-name=Mirantis mirror
+name=Upstream mirror
 baseurl=file://$(LOCAL_MIRROR_CENTOS_OS_BASEURL)
 gpgcheck=0
 enabled=1
+[mos-mirror]
+name=MOS mirror
+baseurl=file://$(LOCAL_MIRROR_MOS_CENTOS_OS_BASEURL)
+gpgcheck=0
+enabled=1
+endef
+
+# add extra repo to bootstrap
+define yum_local_extra_repo
+[$(call get_repo_name,$1)]
+name = Extra repo "$(call get_repo_name,$1)"
+baseurl = file://$(LOCAL_MIRROR)/extra-repos/$(call get_repo_name,$1)
+gpgcheck = 0
+enabled = 1
+priority = $(call get_repo_priority,$1)
+exclude=*debuginfo*
 endef
 
 define bootstrap_yum_conf
@@ -82,9 +103,10 @@ pluginconfpath=$(BUILD_DIR)/bootstrap/etc/yum/pluginconf.d
 reposdir=$(BUILD_DIR)/bootstrap/etc/yum.repos.d
 endef
 
-YUM:=sudo yum -c $(BUILD_DIR)/bootstrap/etc/yum.conf --exclude=ruby-2.1.1 --installroot=$(INITRAMROOT) -y --nogpgcheck
+#FIXME Partial-Bug: #1403088
+YUM:=sudo yum -c $(BUILD_DIR)/bootstrap/etc/yum.conf --exclude=ruby-2.1.1  --exclude=ruby21 --installroot=$(INITRAMROOT) -y --nogpgcheck
 
-KERNEL_PATTERN:=kernel-lt-3.10.*
+KERNEL_PATTERN:=kernel-3.10.0*
 KERNEL_FIRMWARE_PATTERN:=linux-firmware*
 
 clean: clean-bootstrap
@@ -107,9 +129,16 @@ $(BUILD_DIR)/bootstrap/linux: $(BUILD_DIR)/mirror/centos/build.done
 	rm -r $(BUILD_DIR)/bootstrap/boot
 	touch $(BUILD_DIR)/bootstrap/linux
 
+$(BUILD_DIR)/bootstrap/etc/yum.repos.d/extra.repo: $(call depv,EXTRA_RPM_REPOS)
+$(BUILD_DIR)/bootstrap/etc/yum.repos.d/extra.repo: \
+		export contents:=$(foreach repo,$(EXTRA_RPM_REPOS),\n$(call yum_local_extra_repo,$(repo))\n)
+$(BUILD_DIR)/bootstrap/etc/yum.repos.d/extra.repo:
+	@mkdir -p $(@D)
+	/bin/echo -e "$${contents}" > $@
+
 $(BUILD_DIR)/bootstrap/etc/yum.conf: export contents:=$(bootstrap_yum_conf)
 $(BUILD_DIR)/bootstrap/etc/yum.repos.d/base.repo: export contents:=$(yum_local_repo)
-$(BUILD_DIR)/bootstrap/etc/yum.conf $(BUILD_DIR)/bootstrap/etc/yum.repos.d/base.repo:
+$(BUILD_DIR)/bootstrap/etc/yum.conf $(BUILD_DIR)/bootstrap/etc/yum.repos.d/base.repo: $(BUILD_DIR)/bootstrap/etc/yum.repos.d/extra.repo
 	mkdir -p $(@D)
 	/bin/echo -e "$${contents}" > $@
 
@@ -118,8 +147,8 @@ $(BUILD_DIR)/bootstrap/customize-initram-root.done: \
 		$(BUILD_DIR)/packages/rpm/build.done \
 		$(BUILD_DIR)/bootstrap/prepare-initram-root.done \
 		$(call find-files,$(SOURCE_DIR)/bootstrap/sync) \
-		$(BUILD_DIR)/repos/nailgun.done \
-		$(call find-files,$(BUILD_DIR)/repos/nailgun/bin/send2syslog.py) \
+		$(BUILD_DIR)/repos/fuel-nailgun.done \
+		$(call find-files,$(BUILD_DIR)/repos/fuel-nailgun/bin/send2syslog.py) \
 		$(SOURCE_DIR)/bootstrap/ssh/id_rsa.pub \
 		$(BUILD_DIR)/bootstrap/etc/yum.conf \
 		$(BUILD_DIR)/bootstrap/etc/yum.repos.d/base.repo
@@ -132,10 +161,16 @@ $(BUILD_DIR)/bootstrap/customize-initram-root.done: \
 
 	# Copying custom files
 	sudo rsync -rlptDK $(SOURCE_DIR)/bootstrap/sync/ $(INITRAMROOT)
-	sudo cp -r $(BUILD_DIR)/repos/nailgun/bin/send2syslog.py $(INITRAMROOT)/usr/bin
+	sudo cp -r $(BUILD_DIR)/repos/fuel-nailgun/bin/send2syslog.py $(INITRAMROOT)/usr/bin
+
+  # Enable ntpd service
+	sudo ln -snf /etc/systemd/system/ntpd.service $(INITRAMROOT)/etc/systemd/system/default.target.wants/ntpd.service
+	sudo ln -snf /usr/lib/systemd/system/ntpdate.service $(INITRAMROOT)/etc/systemd/system/default.target.wants/ntpdate.service
 
 	# Enabling pre-init boot interface discovery
-	sudo chroot $(INITRAMROOT) chkconfig setup-bootdev on
+	#sudo chroot $(INITRAMROOT) chkconfig setup-bootdev on
+	# Make the network script dependent on the setup-bootdev for correst network starting
+	sudo sed -i -e 's|\(^# Should-Start:.*\)|\1 setup-bootdev|' $(INITRAMROOT)/etc/init.d/network
 
 	# Setting root password into r00tme
 	sudo sed -i -e '/^root/c\root:$$6$$oC7haQNQ$$LtVf6AI.QKn9Jb89r83PtQN9fBqpHT9bAFLzy.YVxTLiFgsoqlPY3awKvbuSgtxYHx4RUcpUqMotp.WZ0Hwoj.:15441:0:99999:7:::' $(INITRAMROOT)/etc/shadow
@@ -189,6 +224,11 @@ $(BUILD_DIR)/bootstrap/prepare-initram-root.done: \
 	# Disabling mail server (it have been installed as a dependency)
 	-sudo chroot $(INITRAMROOT) chkconfig exim off
 	-sudo chroot $(INITRAMROOT) chkconfig postfix off
+	-sudo chroot $(INITRAMROOT) chown smmsp:smmsp /var/spool/clientmqueue
+
+# FIXME (vparakhin): there's no single RPM repo anymore, therefore
+# source mirrors for kernel, modules and libs are specified explicitly.
+# Perhaps this stuff should be moved to global config.mk
 
 	# Installing kernel modules
 	find $(LOCAL_MIRROR_CENTOS_OS_BASEURL) -name '$(KERNEL_PATTERN)' | xargs rpm2cpio | \

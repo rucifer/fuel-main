@@ -10,17 +10,27 @@ mkdir -p /var/log/cobbler/{anamon,kicklog,syslog,tasks}
 # reset authorized_keys file so puppet can a write new one
 rm -f /etc/cobbler/authorized_keys
 
-# Make sure services are not running (no pids, etc), puppet will
-# configure and bring them up.
-/etc/init.d/httpd stop
-/etc/init.d/xinetd stop
+# Because /var/lib/cobbler is mounted as a volume, reinstall if its files are
+# missing
+if rpm -V cobbler | grep -q missing; then
+  yum reinstall -q -y cobbler
+fi
+if rpm -V cobbler-web | grep -q missing; then
+  yum reinstall -q -y cobbler-web
+fi
+
 
 # Run puppet to apply custom config
-puppet apply -v /etc/puppet/modules/nailgun/examples/cobbler-only.pp
-# Stop cobbler and dnsmasq
-/etc/init.d/dnsmasq stop
-/etc/init.d/cobblerd stop
+systemctl daemon-reload
 
-# Running services
-/etc/init.d/dnsmasq restart
-cobblerd -F
+puppet apply --debug --verbose --color false --detailed-exitcodes \
+  --logdest /var/log/puppet/cobbler.log \
+  /etc/puppet/modules/nailgun/examples/cobbler-only.pp || [[ $? == 2 ]]
+
+puppet apply --debug --verbose --color false --detailed-exitcodes \
+  --logdest /var/log/puppet/cobbler-dhcp-default-range.log \
+  /etc/puppet/modules/nailgun/examples/dhcp-default-range.pp || [[ $? == 2 ]]
+
+
+systemctl enable dnsmasq
+systemctl restart dnsmasq

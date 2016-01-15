@@ -22,10 +22,16 @@
 # Include the handy functions to operate VMs and track ISO installation progress
 source ./config.sh
 source ./functions/vm.sh
+source ./functions/network.sh
 source ./functions/product.sh
+source ./functions/translate.sh
 
 # Create master node for the product
+# Get variables "host_nic_name" for the master node
+get_fuel_name_ifaces
+
 name="${vm_name_prefix}master"
+
 create_vm $name "${host_nic_name[0]}" $vm_master_cpu_cores $vm_master_memory_mb $vm_master_disk_mb
 echo
 
@@ -38,19 +44,29 @@ add_nat_adapter_to_vm $name 3 $vm_master_nat_network
 # Mount ISO with installer
 mount_iso_to_vm $name $iso_path
 
+#add RDP connection
+if [ ${headless} -eq 1 ]; then
+  enable_vrde $name ${RDPport}
+fi
+
+if [ "$skipfuelmenu" = "yes" ]; then
+  cmdline="$(grep 'append initrd' ../iso/isolinux/isolinux.cfg -m1 2> /dev/null | sed -e 's/^[ ]*append//')"
+  cmdline="${cmdline:- initrd=initrd.img net.ifnames=0 biosdevname=0 ks=hd:sr0:/ks.cfg ip=10.20.0.2::10.20.0.1:255.255.255.0:fuel.domain.tld:eth0:off::: dns1=10.20.0.1 selinux=0}"
+  boot_line="$(translate "$cmdline showmenu=no"$'\n')"
+fi
+
 # Start virtual machine with the master node
 echo
 start_vm $name
 
-if [ "$skipfuelmenu" = "yes" ]; then
-  wait_for_fuel_menu $vm_master_ip $vm_master_username $vm_master_password "$vm_master_prompt"
-fi
-
-# Wait until the machine gets installed and Puppet completes its run
-wait_for_product_vm_to_install $vm_master_ip $vm_master_username $vm_master_password "$vm_master_prompt"
+# Wait until product VM needs outbound network/internet access
+wait_for_product_vm_to_download $vm_master_ip $vm_master_username $vm_master_password "$vm_master_prompt"
 
 # Enable outbound network/internet access for the machine
 enable_outbound_network_for_product_vm $vm_master_ip $vm_master_username $vm_master_password "$vm_master_prompt" 3 $vm_master_nat_gateway
+
+# Wait until the machine gets installed and Puppet completes its run
+wait_for_product_vm_to_install $vm_master_ip $vm_master_username $vm_master_password "$vm_master_prompt"
 
 # Report success
 echo
